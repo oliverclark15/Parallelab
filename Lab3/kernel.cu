@@ -4,80 +4,106 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define en 0.0002
-#define p 0.5
-#define G 0.75
+#define en 0.0002f
+#define p 0.5f
+#define G 0.75f
 #define N 4
-
-float u[4][4] = { {0} };
-float u1[4][4];
-float u2[4][4];
-
-
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
-
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-    int i = threadIdx.x;
-    c[i] = a[i] + b[i];
-}
+#define NUM_THREADS 16
+#define NUM_BLOCKS 1
 
 int tto(int i, int j) {
-	return i * N + j;
+	return i* N + j;
 }
 
-
 void sideUpdate(int i, int j, float* ua) {
-	int idx = tto(i, j);
-	if (i == 0) ua[idx] = G * ua[tto(1,j)];
-	else if (j == 0) ua[idx] = G * ua[tto(i, 1)];
-	else if (i == (N - 1)) ua[idx] = G * ua[tto(N-2, j)];
-	else if (j == (N - 1)) ua[idx] = G * ua[tto(i, N-2)];
+	int idx = i * N + j;
+	if (i == 0) ua[idx] = G * ua[1*N+j];
+	else if (j == 0) ua[idx] = G * ua[i*N+1];
+	else if (i == (N - 1)) ua[idx] = G * ua[(N-2)*N +  j];
+	else if (j == (N - 1)) ua[idx] = G * ua[i*N+(N-2)];
 
 }
 
 void cornerUpdate(int i, int j, float* ua) {
-	int idx = tto(i, j);
-	if (i == 0 && j == 0) ua[idx] = G * ua[tto(1,j)];
-	else if (i == (N - 1) && j == 0)  ua[idx] = G * ua[tto(N-2,j)];
-	else if (i == 0 && j == (N - 1)) ua[idx] = G * ua[tto(i,N-2)];
-	else if (i == (N - 1) && j == (N - 1)) ua[idx] = G * ua[tto(N-1,N-2)];
+	int idx = i * N + j;
+	if (i == 0 && j == 0) ua[idx] = G * ua[1*N+j];
+	else if (i == (N - 1) && j == 0)  ua[idx] = G * ua[(N-2)*N+j];
+	else if (i == 0 && j == (N - 1)) ua[idx] = G * ua[i*N+(N-2)];
+	else if (i == (N - 1) && j == (N - 1)) ua[idx] = G * ua[(N-1)*N + (N-2)];
 
 }
 
 void interiorUpdate(int i, int j, float* ua, float* ub, float* uc) {
-	int idx = tto(i, j);
-	ua[tto(i,j)] = (p * (ub[tto(i-1, j)] + ub[tto(i+1, j)] + ub[tto(i, j+1)] + ub[tto(i, j-1)] - (4 * ub[idx])) + 2*ub[idx] - (1 - en) * uc[idx]) / (1 + en);
+	int idx = i * N + j;
+	ua[idx] = (p * (ub[(i-1)*N+j] + ub[(i + 1) * N + j] + ub[(i * N) + j + 1] + ub[(i * N) + j - 1] - (4 * ub[idx])) + 2*ub[idx] - (1 - en) * uc[idx]) / (1 + en);
 }
 
-
-
-
-int main()
-{
-    int numIts = 4;//atoi(argv[1]);
-	int dataSize = N * N;
-
-    float* u = (float*)malloc(dataSize * sizeof(float));
-    float* u1 = (float*)malloc(dataSize * sizeof(float));
-    float* u2 = (float*)malloc(dataSize * sizeof(float));
-	int k = 0;
-	for (int i = 0; i < dataSize; i++) {
-		u[i] = 0.0;
-		u1[i] = 0.0;
-		u2[i] = 0.0;
+__global__ void interiorUpdateGPU(float* ua, float* ub, float* uc) {
+	int idx = (blockIdx.x * blockDim.x + threadIdx.x);
+	for (int k = idx; k < N * N; k += NUM_THREADS) {
+		int i = k / N; 
+		int j = k % N; 
+		if (i >= 1 && i <= N - 2 && j >= 1 && j <= N - 2) ua[idx] = (p * (ub[(i - 1) * N + j] + ub[(i + 1) * N + j] + ub[(i * N) + j + 1] + ub[(i * N) + j - 1] - (4 * ub[idx])) + 2 * ub[idx] - (1 - en) * uc[idx]) / (1 + en);
 	}
-	u1[tto(N / 2, N / 2)] = 1;
+}
 
+__global__ void sideUpdateGPU(float* u) {
+	int idx = (blockIdx.x * blockDim.x + threadIdx.x);
+	for (int k = idx; k < N * N; k += NUM_THREADS) {
+		int i = k / N; 
+		int j = k % N;
+		if (i == 0) u[idx] = G * u[1 * N + j];
+		else if (j == 0) u[idx] = G * u[i * N + 1];
+		else if (i == (N - 1)) u[idx] = G * u[(N - 2) * N + j];
+		else if (j == (N - 1)) u[idx] = G * u[i * N + (N - 2)];
+	}
+}
+
+__global__ void cornerUpdateGPU(float* u) {
+	int idxB = (blockIdx.x * blockDim.x + threadIdx.x);
+	for (int k = idxB; k < N * N; k += NUM_THREADS) {
+		int i = k / N;
+		int j = k % N;
+		int idx = i * N + j;
+		if (i == 0 && j == 0) u[idx] = G * u[1 * N + j];
+		else if (i == (N - 1) && j == 0)  u[idx] = G * u[(N - 2) * N + j];
+		else if (i == 0 && j == (N - 1)) u[idx] = G * u[i * N + (N - 2)];
+		else if (i == (N - 1) && j == (N - 1)) u[idx] = G * u[(N - 1) * N + (N - 2)];
+	}
+}
+
+void parallelDrum(int iterations, int dataSize, float* u, float* u1, float* u2) {
+
+	u1[(N / 2) * N + (N / 2)] = 1.f;
+	int k = 0;
+	while (k < iterations){
+
+		interiorUpdateGPU << < NUM_BLOCKS, NUM_THREADS >> > (u, u1, u2);
+		cudaDeviceSynchronize();
+		sideUpdateGPU << < NUM_BLOCKS, NUM_THREADS >> > (u);
+		cudaDeviceSynchronize();
+		cornerUpdateGPU << < NUM_BLOCKS, NUM_THREADS >> > (u);
+		cudaDeviceSynchronize();
+
+		memcpy(u2, u1, dataSize * sizeof(float));
+		memcpy(u1, u, dataSize * sizeof(float));
+
+		printf("u[%d][%d] = %.6f\n", N / 2, N / 2, u[tto(N/2,N/2)]);
+		k += 1;
+	}
+
+}
+
+void serialDrum(int iterations, int dataSize, float* u, float* u1, float* u2) {
+	int k = 0;
 	for (int i = 0; i < 4; i++) {
 		for (int j = 0; j < 4; j++) {
-			printf("%.6f,", u[tto(i,j)]);
+			printf("%.6f,", u[tto(i, j)]);
 		}
 		printf("\n");
 	}
 	printf("---------------------------------\n\n");
-	while (k < numIts) {
-
+	while (k < iterations) {
 		for (int i = 1; i < N - 1; i++) {
 			for (int j = 1; j < N - 1; j++) {
 				interiorUpdate(i, j, u, u1, u2);
@@ -86,19 +112,19 @@ int main()
 
 		for (int i = 1; i < N - 1; i++) {
 			sideUpdate(0, i, u);
-			sideUpdate(N - 1, i,  u);
+			sideUpdate(N - 1, i, u);
 			sideUpdate(i, 0, u);
 			sideUpdate(i, N - 1, u);
 		}
 
-		cornerUpdate(0, 0,u);
+		cornerUpdate(0, 0, u);
 		cornerUpdate(N - 1, 0, u);
 		cornerUpdate(0, N - 1, u);
 		cornerUpdate(N - 1, N - 1, u);
 
 		for (int i = 0; i < 4; i++) {
 			for (int j = 0; j < 4; j++) {
-				printf("%.6f,", u[tto(i,j)]);
+				printf("%.6f,", u[tto(i, j)]);
 			}
 			printf("\n");
 		}
@@ -106,86 +132,41 @@ int main()
 		memcpy(u2, u1, dataSize * sizeof(float));
 		memcpy(u1, u, dataSize * sizeof(float));
 		k += 1;
-		
 	}
+
+
+
+
 }
 
-// Helper function for using CUDA to add vectors in parallel.
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
+
+int main()
 {
-    int *dev_a = 0;
-    int *dev_b = 0;
-    int *dev_c = 0;
-    cudaError_t cudaStatus;
+    int numIts = 4;//atoi(argv[1]);
+	int dataSize = N * N;
+	int fds = sizeof(float) * dataSize;
 
-    // Choose which GPU to run on, change this on a multi-GPU system.
-    cudaStatus = cudaSetDevice(0);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-        goto Error;
-    }
+	float* u = (float*)calloc(dataSize,sizeof(float));
+	float* u1 = (float*)calloc(dataSize,sizeof(float));
+	float* u2 = (float*)calloc(dataSize,sizeof(float));
 
-    // Allocate GPU buffers for three vectors (two input, one output)    .
-    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
+	if (u == NULL) exit(0);
+	if (u1 == NULL) exit(0);
+	if (u2 == NULL) exit(0);
 
-    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
+	u1[tto(N / 2, N / 2)] = 1.f;
 
-    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
+	serialDrum(numIts, dataSize,u,u1,u2);
 
-    // Copy input vectors from host memory to GPU buffers.
-    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
+	cudaMallocManaged((void**)& u, fds);
+	cudaMallocManaged((void**)& u1, fds);
+	cudaMallocManaged((void**)& u2, fds);
 
-    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
+	parallelDrum(numIts, dataSize, u, u1, u2);
 
-    // Launch a kernel on the GPU with one thread for each element.
-    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
+	free(u);
+	free(u1);
+	free(u2);
 
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
-    
-    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-    // any errors encountered during the launch.
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-        goto Error;
-    }
-
-    // Copy output vector from GPU buffer to host memory.
-    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-Error:
-    cudaFree(dev_c);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
-    
-    return cudaStatus;
 }
+
