@@ -2,7 +2,17 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#define en 0.0002
+#define p 0.5
+#define G 0.75
+#define N 4
+
+float u[4][4] = { {0} };
+float u1[4][4];
+float u2[4][4];
+
 
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
 
@@ -12,153 +22,92 @@ __global__ void addKernel(int *c, const int *a, const int *b)
     c[i] = a[i] + b[i];
 }
 
-#define en 0.0002
-#define p 0.5
-#define G 0.75
+int tto(int i, int j) {
+	return i * N + j;
+}
 
 
-void sideUpdate(int i, int j, int N, float** u, float** u1, float** u2) {
-	if (i == 0) u[i][j] = G * u[1][j];
-	else if (j == 0) u[i][j] = G * u[i][1];
-	else if (i == (N - 1)) u[i][j] = G * u[N - 2][j];
-	else if (j == (N - 1)) u[i][j] = G * u[i][N - 2];
+void sideUpdate(int i, int j, float* ua) {
+	int idx = tto(i, j);
+	if (i == 0) ua[idx] = G * ua[tto(1,j)];
+	else if (j == 0) ua[idx] = G * ua[tto(i, 1)];
+	else if (i == (N - 1)) ua[idx] = G * ua[tto(N-2, j)];
+	else if (j == (N - 1)) ua[idx] = G * ua[tto(i, N-2)];
 
 }
 
-void cornerUpdate(int i, int j, int N, float** u, float** u1, float** u2) {
-	if (i == 0 && j == 0) u[i][j] = G * u[1][j];
-	else if (i == (N - 1) && j == 0) u[i][j] = G * u[N - 2][j];
-	else if (i == 0 && j == (N - 1)) u[i][j] = G * u[i][N - 2];
-	else if (i == (N - 1) && j == (N - 1)) u[i][j] = G * u[N - 1][N - 2];
+void cornerUpdate(int i, int j, float* ua) {
+	int idx = tto(i, j);
+	if (i == 0 && j == 0) ua[idx] = G * ua[tto(1,j)];
+	else if (i == (N - 1) && j == 0)  ua[idx] = G * ua[tto(N-2,j)];
+	else if (i == 0 && j == (N - 1)) ua[idx] = G * ua[tto(i,N-2)];
+	else if (i == (N - 1) && j == (N - 1)) ua[idx] = G * ua[tto(N-1,N-2)];
 
 }
 
-void interiorUpdate(int i, int j, float** u, float** u1, float** u2) {
-
-	u[i][j] = (p * (u1[i - 1][j] + u1[i + 1][j] + u1[i][j + 1] + u1[i][j - 1] - (4 * u1[i][j])) + 2*u1[i][j] - (1 - en) * u2[i][j]) / (1 + en);
-
+void interiorUpdate(int i, int j, float* ua, float* ub, float* uc) {
+	int idx = tto(i, j);
+	ua[tto(i,j)] = (p * (ub[tto(i-1, j)] + ub[tto(i+1, j)] + ub[tto(i, j+1)] + ub[tto(i, j-1)] - (4 * ub[idx])) + 2*ub[idx] - (1 - en) * uc[idx]) / (1 + en);
 }
 
-void initvalues(float* u, float* u1, float* u2) {
 
 
-}
 
 int main()
 {
+    int numIts = 4;//atoi(argv[1]);
+	int dataSize = N * N;
 
-	float *u[4];
-	float ua[4] = { 0.0, 0.0, .374925, .281194 },
-		ub[4] = { 0.0, 0.0, .499900, .374925 },
-		uc[4] = { .37492, .499900, 0.0, 0.0 },
-		ud[4] = { .281194,  .374925, 0.0, 0.0 };
-
-
-	int N = 4;
-	u[0] = ua;
-	u[1] = ub;
-	u[2] = uc;
-	u[3] = ud;
-
-
-	float* u1[4];
-	float* u2[4];
-	memcpy(u1, u, 16 * sizeof(float));
-	memcpy(u2, u, 16 * sizeof(float));
+    float* u = (float*)malloc(dataSize * sizeof(float));
+    float* u1 = (float*)malloc(dataSize * sizeof(float));
+    float* u2 = (float*)malloc(dataSize * sizeof(float));
+	int k = 0;
+	for (int i = 0; i < dataSize; i++) {
+		u[i] = 0.0;
+		u1[i] = 0.0;
+		u2[i] = 0.0;
+	}
+	u1[tto(N / 2, N / 2)] = 1;
 
 	for (int i = 0; i < 4; i++) {
 		for (int j = 0; j < 4; j++) {
-			printf("%.6f,", u[i][j]);
+			printf("%.6f,", u[tto(i,j)]);
 		}
 		printf("\n");
 	}
 	printf("---------------------------------\n\n");
+	while (k < numIts) {
 
-	for (int i = 0; i < 4; i++) {
-		for (int j = 0; j < 4; j++) {
-			printf("%.6f,", u1[i][j]);
+		for (int i = 1; i < N - 1; i++) {
+			for (int j = 1; j < N - 1; j++) {
+				interiorUpdate(i, j, u, u1, u2);
+			}
 		}
-		printf("\n");
-	}
-	printf("---------------------------------\n\n");
-	for (int i = 0; i < 4; i++) {
-		for (int j = 0; j < 4; j++) {
-			printf("%.6f,", u2[i][j]);
+
+		for (int i = 1; i < N - 1; i++) {
+			sideUpdate(0, i, u);
+			sideUpdate(N - 1, i,  u);
+			sideUpdate(i, 0, u);
+			sideUpdate(i, N - 1, u);
 		}
-		printf("\n");
-	}
-	printf("---------------------------------\n\n");
 
-	for (int i = 1; i < N-1; i++) {
-		for (int j = 1; j < N-1; j++) {
-			interiorUpdate(i, j, u, u1, u2);
+		cornerUpdate(0, 0,u);
+		cornerUpdate(N - 1, 0, u);
+		cornerUpdate(0, N - 1, u);
+		cornerUpdate(N - 1, N - 1, u);
+
+		for (int i = 0; i < 4; i++) {
+			for (int j = 0; j < 4; j++) {
+				printf("%.6f,", u[tto(i,j)]);
+			}
+			printf("\n");
 		}
+		printf("---------------------------------\n\n");
+		memcpy(u2, u1, dataSize * sizeof(float));
+		memcpy(u1, u, dataSize * sizeof(float));
+		k += 1;
+		
 	}
-	
-	for (int i = 1; i < N - 1; i++) {
-		sideUpdate(0, i, N, u, u1, u2);
-		sideUpdate(N-1, i, N, u, u1, u2);
-		sideUpdate(i, 0, N, u, u1, u2);
-		sideUpdate(i, N-1, N, u, u1, u2);
-	}
-
-	cornerUpdate(0, 0, N, u, u1, u2);
-	cornerUpdate(N-1, 0, N, u, u1, u2);
-	cornerUpdate(0, N-1, N, u, u1, u2);
-	cornerUpdate(N-1, N-1, N, u, u1, u2);
-	
-	for (int i = 0; i < 4; i++) {
-		for (int j = 0; j < 4; j++) {
-			printf("%.6f,", u[i][j]);
-		}
-		printf("\n");
-	}
-	printf("---------------------------------\n\n");
-
-	for (int i = 0; i < 4; i++) {
-		for (int j = 0; j < 4; j++) {
-			printf("%.6f,", u1[i][j]);
-		}
-		printf("\n");
-	}
-	printf("---------------------------------\n\n");
-	for (int i = 0; i < 4; i++) {
-		for (int j = 0; j < 4; j++) {
-			printf("%.6f,", u2[i][j]);
-		}
-		printf("\n");
-	}
-	printf("---------------------------------\n\n");
-
-
-
-
-		/*
-    const int arraySize = 5;
-    const int a[arraySize] = { 1, 2, 3, 4, 5 };
-    const int b[arraySize] = { 10, 20, 30, 40, 50 };
-    int c[arraySize] = { 0 };
-
-    // Add vectors in parallel.
-    cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addWithCuda failed!");
-        return 1;
-    }
-
-    printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
-        c[0], c[1], c[2], c[3], c[4]);
-
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceReset failed!");
-        return 1;
-    }
-
-    return 0;
-	*/
 }
 
 // Helper function for using CUDA to add vectors in parallel.
