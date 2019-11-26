@@ -72,9 +72,8 @@ __global__ void cornerUpdateGPU(float* u) {
 	}
 }
 
-void parallelDrum(int iterations, int dataSize, float* u, float* u1, float* u2) {
+void parallelDrum(int iterations, int fds, float* u, float* u1, float* u2) {
 
-	u1[(N / 2) * N + (N / 2)] = 1.f;
 	int k = 0;
 	while (k < iterations){
 
@@ -85,8 +84,8 @@ void parallelDrum(int iterations, int dataSize, float* u, float* u1, float* u2) 
 		cornerUpdateGPU << < NUM_BLOCKS, NUM_THREADS >> > (u);
 		cudaDeviceSynchronize();
 
-		memcpy(u2, u1, dataSize * sizeof(float));
-		memcpy(u1, u, dataSize * sizeof(float));
+		memcpy(u2, u1, fds);
+		memcpy(u1, u, fds);
 
 		printf("u[%d][%d] = %.6f\n", N / 2, N / 2, u[tto(N/2,N/2)]);
 		k += 1;
@@ -133,10 +132,6 @@ void serialDrum(int iterations, int dataSize, float* u, float* u1, float* u2) {
 		memcpy(u1, u, dataSize * sizeof(float));
 		k += 1;
 	}
-
-
-
-
 }
 
 
@@ -162,11 +157,14 @@ int main()
 	cudaMallocManaged((void**)& u1, fds);
 	cudaMallocManaged((void**)& u2, fds);
 
-	parallelDrum(numIts, dataSize, u, u1, u2);
+	u1[tto(N / 2, N / 2)] = 1.f;
 
-	free(u);
-	free(u1);
-	free(u2);
+	parallelDrum(numIts, fds, u, u1, u2);
+
+
+	cudaFree(u);
+	cudaFree(u1);
+	cudaFree(u2);
 
 }
 
